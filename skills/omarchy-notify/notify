@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Send an Omarchy desktop notification branded with the calling agent's icon.
+#
+# usage: notify [-u low|normal|critical] <headline> [description]
+#
+# Icon lookup, first match wins:
+#   ~/.config/omarchy/agent-icons/<agent>.{svg,png}   user-supplied, wins over everything
+#   <this dir>/icons/<agent>.{svg,png}                shipped beside this script
+#   /usr/share/omarchy/shell/plugins/agents/assets/   Omarchy's own (claude, codex, fireworks)
+# Add an agent by dropping <agent>.svg into either writable dir. Agents with no
+# icon anywhere fall back to a robot glyph.
+
+set -euo pipefail
+
+usage() { echo "usage: notify [-u low|normal|critical] <headline> [description]" >&2; }
+
+urgency=normal
+args=()
+while (($#)); do
+  case $1 in
+  -u | --urgency)
+    [[ -n ${2-} ]] || { usage; exit 1; }
+    urgency=$2
+    shift 2
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    args+=("$1")
+    shift
+    ;;
+  esac
+done
+
+((${#args[@]} > 0)) || { usage; exit 1; }
+
+# Identify the agent by walking up the process tree. Works for any CLI that runs
+# its shell as a descendant, so a new agent needs no env var of its own here.
+agent=""
+pid=$$
+while [[ -n $pid ]] && ((pid > 1)); do
+  comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ') || break
+  case $comm in
+  claude | codex | opencode | gemini | copilot | crush | grok | pi | omp)
+    agent=$comm
+    break
+    ;;
+  esac
+  pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ') || break
+done
+
+# Claude Code exports this even when its binary is wrapped or renamed.
+[[ -z $agent && -n ${CLAUDECODE-} ]] && agent=claude
+
+icon=""
+if [[ -n $agent ]]; then
+  for dir in \
+    "$HOME/.config/omarchy/agent-icons" \
+    "$(dirname "$(readlink -f "$0")")/icons" \
+    /usr/share/omarchy/shell/plugins/agents/assets; do
+    for ext in svg png; do
+      if [[ -f $dir/$agent.$ext ]]; then
+        icon=$dir/$agent.$ext
+        break 2
+      fi
+    done
+  done
+fi
+
+if [[ -n $icon ]]; then
+  exec omarchy notification send --image "$icon" -u "$urgency" "${args[@]}"
+else
+  exec omarchy notification send -g 󰚩 -u "$urgency" "${args[@]}"
+fi
