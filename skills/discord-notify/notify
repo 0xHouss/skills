@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# Send a Discord notification from an agent session, branded with the calling
+# agent's icon and footed with the conversation it came from.
+#
+# usage: notify [-u low|normal|critical] [--webhook URL] <headline> [description]
+#
+# Webhook, first match wins:
+#   --webhook URL
+#   $DISCORD_WEBHOOK_URL
+#   ~/.config/discord-notify/webhook          (file containing the URL)
+#
+# Icon lookup, first match wins (png before svg — Discord cannot render svg, so
+# an svg is converted to png and cached under ~/.cache/discord-notify/):
+#   ~/.config/omarchy/agent-icons/<agent>.{png,svg}   user-supplied, wins over everything
+#   <this dir>/icons/<agent>.{png,svg}                shipped beside this script
+#   /usr/share/omarchy/shell/plugins/agents/assets/   Omarchy's own (claude, codex, fireworks)
+#
+# Optional:
+#   $DISCORD_NOTIFY_MENTION   e.g. '<@1234567890>' — prepended to critical sends
+#                             so they push to your phone.
+
+set -euo pipefail
+
+usage() { echo "usage: notify [-u low|normal|critical] [--webhook URL] <headline> [description]" >&2; }
+die() { echo "notify: $*" >&2; exit 1; }
+
+urgency=normal
+webhook=${DISCORD_WEBHOOK_URL-}
+args=()
+while (($#)); do
+  case $1 in
+  -u | --urgency)
+    [[ -n ${2-} ]] || { usage; exit 1; }
+    urgency=$2
+    shift 2
+    ;;
+  -w | --webhook)
+    [[ -n ${2-} ]] || { usage; exit 1; }
+    webhook=$2
+    shift 2
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    args+=("$1")
+    shift
+    ;;
+  esac
+done
+
+((${#args[@]} > 0)) || { usage; exit 1; }
+
+case $urgency in
+low | normal | critical) ;;
+*) die "unknown urgency '$urgency' (low, normal, critical)" ;;
+esac
+
+if [[ -z $webhook && -r $HOME/.config/discord-notify/webhook ]]; then
+  webhook=$(grep -m1 -o 'https://[^[:space:]]*' "$HOME/.config/discord-notify/webhook" || true)
+fi
+[[ -n $webhook ]] || die "no webhook configured. Set DISCORD_WEBHOOK_URL, or write the
+  URL to ~/.config/discord-notify/webhook (Discord: Channel > Edit Channel >
+  Integrations > Webhooks > New Webhook > Copy Webhook URL)."
+
+command -v curl >/dev/null || die "curl is required"
+command -v jq >/dev/null || die "jq is required"
+
+# --- which agent is this? -----------------------------------------------------
+# Walk up the process tree, so a new agent needs no env var of its own here.
+agent=""
+pid=$$
+while [[ -n $pid ]] && ((pid > 1)); do
+  comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ') || break
+  case $comm in
+  claude | codex | opencode | gemini | copilot | crush | grok | pi | omp)
+    agent=$comm
+    break
+    ;;
+  esac
+  pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ') || break
+done
+
+# Claude Code exports this even when its binary is wrapped or renamed.
+[[ -z $agent && -n ${CLAUDECODE-} ]] && agent=claude
+
+case $agent in
+"") agent_name="Agent" ;;
+codex) agent_name="Codex" ;;
+opencode) agent_name="OpenCode" ;;
+omp) agent_name="OMP" ;;
+*) agent_name="${agent^}" ;;
+esac
+
+# --- its icon, as a png Discord will actually render --------------------------
+icon=""
+if [[ -n $agent ]]; then
+  for dir in \
+    "$HOME/.config/omarchy/agent-icons" \
+    "$(dirname "$(readlink -f "$0")")/icons" \
+    /usr/share/omarchy/shell/plugins/agents/assets; do
+    for ext in png svg; do
+      if [[ -f $dir/$agent.$ext ]]; then
+        icon=$dir/$agent.$ext
+        break 2
+      fi
+    done
+  done
+fi
+
+if [[ $icon == *.svg ]]; then
+  cache=$HOME/.cache/discord-notify
+  png=$cache/$agent.png
+  if [[ ! -f $png || $icon -nt $png ]]; then
+    mkdir -p "$cache" 2>/dev/null || png=""
+    if [[ -z $png ]]; then
+      : # no writable cache — send without an icon
+    elif command -v rsvg-convert >/dev/null; then
+      rsvg-convert -w 128 -h 128 -a "$icon" -o "$png.tmp" 2>/dev/null &&
+        mv -f "$png.tmp" "$png" || { rm -f "$png.tmp"; png=""; }
+    elif command -v magick >/dev/null; then
+      magick -background none "$icon" -resize 128x128 "$png.tmp" 2>/dev/null &&
+        mv -f "$png.tmp" "$png" || { rm -f "$png.tmp"; png=""; }
+    else
+      png=""
+    fi
+  fi
+  icon=$png
+fi
+[[ -n $icon && -f $icon ]] || icon=""
+
+# --- which conversation is this? ----------------------------------------------
+# Claude Code names sessions two ways: an AI-written title in the transcript,
+# and a derived name in the session record. Prefer the title, it reads better.
+title=""
+if [[ -n ${CLAUDE_CODE_SESSION_ID-} ]]; then
+  for t in "$HOME"/.claude/projects/*/"$CLAUDE_CODE_SESSION_ID".jsonl; do
+    [[ -f $t ]] || continue
+    title=$(grep '"ai-title"' "$t" 2>/dev/null | tail -1 |
+      jq -r '.aiTitle // empty' 2>/dev/null) || title=""
+    break
+  done
+fi
+if [[ -z $title && -n ${CLAUDE_PID-} && -r $HOME/.claude/sessions/$CLAUDE_PID.json ]]; then
+  title=$(jq -r '.name // empty' "$HOME/.claude/sessions/$CLAUDE_PID.json" 2>/dev/null) || title=""
+fi
+[[ -n $title ]] || title=$(basename "$PWD")
+
+branch=$(git -C "$PWD" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+[[ $branch == HEAD ]] && branch=""
+footer=$title
+[[ -n $branch ]] && footer="$title · $branch"
+
+# --- build and send -----------------------------------------------------------
+case $urgency in
+critical) color=15548997 ;; # red
+normal) color=5793266 ;;    # blurple
+low) color=9739684 ;;       # grey
+esac
+
+content=""
+[[ $urgency == critical && -n ${DISCORD_NOTIFY_MENTION-} ]] && content=$DISCORD_NOTIFY_MENTION
+
+payload=$(jq -nc \
+  --arg username "$agent_name" \
+  --arg content "$content" \
+  --arg title "${args[0]:0:256}" \
+  --arg description "${args[1]-}" \
+  --arg footer "${footer:0:2048}" \
+  --arg icon "$icon" \
+  --argjson color "$color" \
+  '{
+     username: $username,
+     embeds: [
+       ({
+          color: $color,
+          title: $title,
+          footer: { text: $footer },
+          timestamp: (now | todateiso8601)
+        }
+        + (if $description == "" then {} else { description: $description[0:4096] } end)
+        + (if $icon == "" then {}
+           else { author: { name: $username, icon_url: "attachment://agent.png" } } end))
+     ]
+   }
+   + (if $content == "" then {} else { content: $content } end)
+   + (if $icon == "" then {} else { attachments: [ { id: 0, filename: "agent.png" } ] } end)')
+
+send() {
+  if [[ -n $icon ]]; then
+    curl -sS -w '\n%{http_code}' -X POST "$webhook" \
+      -F "payload_json=$payload" \
+      -F "files[0]=@$icon;type=image/png;filename=agent.png"
+  else
+    curl -sS -w '\n%{http_code}' -X POST "$webhook" \
+      -H 'Content-Type: application/json' -d "$payload"
+  fi
+}
+
+response=$(send) || die "could not reach Discord"
+code=${response##*$'\n'}
+body=${response%$'\n'*}
+
+if [[ $code == 429 ]]; then
+  wait=$(jq -r '.retry_after // 2' <<<"$body" 2>/dev/null) || wait=2
+  sleep "$wait"
+  response=$(send) || die "could not reach Discord"
+  code=${response##*$'\n'}
+  body=${response%$'\n'*}
+fi
+
+case $code in
+2*) exit 0 ;;
+401 | 403 | 404) die "webhook rejected ($code) — it may have been deleted or the URL is wrong" ;;
+*) die "Discord returned $code: ${body:0:300}" ;;
+esac
