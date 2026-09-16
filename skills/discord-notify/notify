@@ -7,7 +7,9 @@
 # Webhook, first match wins:
 #   --webhook URL
 #   $DISCORD_WEBHOOK_URL
-#   ~/.config/discord-notify/webhook          (file containing the URL)
+#   ${XDG_CONFIG_HOME:-~/.config}/discord-notify/webhook   (file containing the URL)
+#
+# With none of them set the script exits 1 and prints the setup steps.
 #
 # Icon lookup, first match wins (png before svg — Discord cannot render svg, so
 # an svg is converted to png and cached under ~/.cache/discord-notify/):
@@ -57,12 +59,38 @@ low | normal | critical) ;;
 *) die "unknown urgency '$urgency' (low, normal, critical)" ;;
 esac
 
-if [[ -z $webhook && -r $HOME/.config/discord-notify/webhook ]]; then
-  webhook=$(grep -m1 -o 'https://[^[:space:]]*' "$HOME/.config/discord-notify/webhook" || true)
+configdir=${XDG_CONFIG_HOME:-$HOME/.config}/discord-notify
+config=$configdir/webhook
+if [[ -z $webhook && -r $config ]]; then
+  webhook=$(grep -m1 -o 'https://[^[:space:]]*' "$config" || true)
 fi
-[[ -n $webhook ]] || die "no webhook configured. Set DISCORD_WEBHOOK_URL, or write the
-  URL to ~/.config/discord-notify/webhook (Discord: Channel > Edit Channel >
-  Integrations > Webhooks > New Webhook > Copy Webhook URL)."
+
+if [[ -z $webhook ]]; then
+  cat >&2 <<EOF
+notify: no Discord webhook configured — this skill needs a one-time setup.
+
+  1. In Discord, right-click the channel you want the notifications in:
+     Edit Channel > Integrations > Webhooks > New Webhook > Copy Webhook URL
+     (a private channel in your own server is the usual choice — anyone with
+     the URL can post to it)
+
+  2. Save it:
+
+     mkdir -p $configdir
+     printf '%s\\n' 'PASTE_URL_HERE' > $config
+     chmod 600 $config
+
+  3. Re-run this command.
+
+Optional: export DISCORD_NOTIFY_MENTION='<@your-user-id>' to have critical
+sends mention you, so they push to your phone. Without it every urgency
+arrives at the same volume.
+
+DISCORD_WEBHOOK_URL in the environment, or --webhook URL, also work and take
+precedence over the file.
+EOF
+  exit 1
+fi
 
 command -v curl >/dev/null || die "curl is required"
 command -v jq >/dev/null || die "jq is required"

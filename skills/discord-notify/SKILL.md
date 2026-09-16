@@ -23,8 +23,20 @@ The script works out which agent is running it and which conversation it came
 from, and brands the message with that agent's icon and this conversation's
 title. Pass the text and, when it matters, the urgency — nothing else.
 
-If it exits non-zero it prints why. A missing webhook is a setup problem the
-user has to fix; say so in your reply rather than retrying.
+If it exits non-zero it prints why. Pass that reason on in your reply rather
+than retrying — every failure here needs the user, not another attempt.
+
+## It needs a webhook first
+
+Sending anywhere requires a Discord webhook URL, which only the user can
+create. The script looks for one in `$DISCORD_WEBHOOK_URL`, then in
+`~/.config/discord-notify/webhook`; with neither, it exits 1 and prints the
+steps.
+
+If that is what you get, the skill is installed but unconfigured. Hand the
+user the steps the script printed and carry on with the task — do not go
+hunting for a webhook URL in their files, their environment, or their shell
+history, and never post to a URL they did not put there themselves.
 
 ## The bar
 

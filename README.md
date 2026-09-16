@@ -28,7 +28,7 @@ npx skills add 0xHouss/skills -a claude-code -g
 | Skill | What it does |
 | --- | --- |
 | [`omarchy-notify`](skills/omarchy-notify) | Lets an agent session reach you by desktop notification when you are not watching it, branded with that agent's own icon. |
-| [`discord-notify`](skills/discord-notify) | The same, over a Discord webhook, so a session can reach you when you are away from the machine. |
+| [`discord-notify`](skills/discord-notify) | The same, over a Discord webhook, so a session can reach you when you are away from the machine. **Needs [a webhook URL](#setup)** — it is the one skill here with setup. |
 
 ## omarchy-notify
 
@@ -88,28 +88,51 @@ on, so a wall of notifications from parallel sessions stays readable:
 
 ### Setup
 
-Create a webhook in Discord — **Channel → Edit Channel → Integrations →
-Webhooks → New Webhook → Copy Webhook URL** — then put it somewhere the script
-will find it:
+Installing the skill is not enough — it has nowhere to send until you give it a
+webhook. This is the whole setup, done once.
+
+**1. Create the webhook.** In Discord, right-click the channel you want the
+notifications in → **Edit Channel → Integrations → Webhooks → New Webhook →
+Copy Webhook URL**. A private channel in a server of your own is the usual
+choice: anyone holding that URL can post to the channel, so treat it as a
+secret. The name and avatar you set there do not matter, since each message
+overrides both with the sending agent's.
+
+**2. Save it where the script looks.**
 
 ```bash
 mkdir -p ~/.config/discord-notify
-echo 'https://discord.com/api/webhooks/...' > ~/.config/discord-notify/webhook
+printf '%s\n' 'https://discord.com/api/webhooks/...' > ~/.config/discord-notify/webhook
 chmod 600 ~/.config/discord-notify/webhook
 ```
 
-`DISCORD_WEBHOOK_URL` in the environment works too and wins over the file, and
-`--webhook URL` wins over both — useful for routing a particular project to its
-own channel.
+**3. Check it.**
 
-To have `critical` sends actually push to your phone, set a mention. Right-click
-yourself in Discord → **Copy User ID** (Developer Mode must be on):
+```bash
+skills/discord-notify/notify "setup · works" "First message from discord-notify."
+```
+
+Silence and exit 0 means it sent. If you have not done step 2, the script exits
+1 and prints these steps rather than failing obscurely.
+
+The file is read first from `$XDG_CONFIG_HOME` if you set it. Two overrides
+take precedence over it:
+
+| | |
+| --- | --- |
+| `DISCORD_WEBHOOK_URL` | Beats the file. Handy per-shell; easy to forget you set it. |
+| `--webhook URL` | Beats both. For routing one project to its own channel. |
+
+**Optional — make `critical` reach your phone.** Without a mention, every
+urgency arrives at whatever volume the channel is set to, which makes the
+levels decorative. Turn on **Settings → Advanced → Developer Mode**, right-click
+your own name → **Copy User ID**, then add to your shell profile:
 
 ```bash
 export DISCORD_NOTIFY_MENTION='<@123456789012345678>'   # or '<@&roleid>'
 ```
 
-Only `critical` uses it. `normal` and `low` arrive silently.
+Only `critical` uses it. `normal` and `low` stay quiet.
 
 ### What it fills in for you
 
