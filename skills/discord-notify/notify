@@ -218,7 +218,7 @@ payload=$(jq -nc \
 send() {
   if [[ -n $icon ]]; then
     curl -sS -w '\n%{http_code}' -X POST "$webhook" \
-      -F "payload_json=$payload" \
+      --form-string "payload_json=$payload" \
       -F "files[0]=@$icon;type=image/png;filename=agent.png"
   else
     curl -sS -w '\n%{http_code}' -X POST "$webhook" \
